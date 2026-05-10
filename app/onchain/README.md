@@ -1,79 +1,131 @@
-# On-Chain Module (Soroban Contracts)
-//Comment
-This module contains Soroban smart contracts for Aegis's on-chain escrow and claimable packages functionality.
+# Smart Contracts
 
-## 🧠 AidEscrow Contract
+Soroban smart contracts for the Aegis platform, written in Rust. Handles on-chain escrow, fund locking, and claimable aid package disbursement on the Stellar network.
 
-The **AidEscrow** contract facilitates secure, transparent aid disbursement. Packages are created for specific recipients with locked funds, and can be disbursed by administrators.
+## Contract: AidEscrow
 
-### Core Invariants
-* **Pool Model:** Funds must be deposited into the contract via `fund()` before they can be allocated to packages.
-* **Solvency:** A package cannot be created if `Contract Balance < Total Locked Amount + New Package Amount`.
-* **State Machine:** A package transitions through various statuses: `Created` -> `Claimed` (or `Expired`, `Cancelled` -> `Refunded`).
-* **Time-Bounds:** Packages can have expiration times. Claiming is blocked after expiration.
-* **Admin Sovereignty:** Only the admin or authorized distributors can create packages. Only the admin can pause, configure, or manually disburse funds.
+The `AidEscrow` contract manages the full lifecycle of an aid package on-chain.
 
-### Event schema (indexer-friendly)
+### How it works
 
-Events use **stable topic identifiers** (struct name in snake_case) so indexers and dashboards can filter reliably. Payloads are compact; no PII. Do not rename event types without a versioning strategy.
+1. Admin calls `fund()` to deposit tokens into the contract pool
+2. Admin calls `create_package()` to lock funds for a specific recipient
+3. Recipient calls `claim()` to receive their funds directly
+4. Expired or cancelled packages can be `refund()`ed back to the pool
 
-| Event type (topic) | When emitted | Fields |
-| :--- | :--- | :--- |
-| `escrow_funded` | Pool is funded | `from`, `token`, `amount`, `timestamp` |
-| `package_created` | Package created | `package_id`, `recipient`, `amount`, `actor`, `timestamp` |
-| `package_claimed` | Recipient claims package | `package_id`, `recipient`, `amount`, `actor`, `timestamp` |
-| `package_disbursed` | Admin disburses to recipient | `package_id`, `recipient`, `amount`, `actor`, `timestamp` |
-| `package_revoked` | Package cancelled/revoked | `package_id`, `recipient`, `amount`, `actor`, `timestamp` |
-| `package_refunded` | Funds refunded to admin | `package_id`, `recipient`, `amount`, `actor`, `timestamp` |
-| `batch_created_event` | Batch of packages created | `ids`, `admin`, `total_amount` |
-| `extended_event` | Package expiry extended | `id`, `admin`, `old_expires_at`, `new_expires_at` |
-| `surplus_withdrawn_event` | Surplus funds withdrawn | `to`, `token`, `amount` |
+### Core rules
 
-**Sample (package_created):**
-```json
-{
-  "topics": ["package_created"],
-  "data": {
-    "package_id": 1,
-    "recipient": "<address>",
-    "amount": "1000000000",
-    "actor": "<address>",
-    "timestamp": 1234567890
-  }
-}
+- Funds must be deposited via `fund()` before packages can be created
+- A package cannot be created if `contract balance < total locked + new amount`
+- Only the admin or an authorised distributor can create packages
+- Only the recipient can claim their own package
+- Packages can have an expiration time — claiming is blocked after expiry
+
+### State transitions
+
+```
+Created → Claimed
+Created → Expired → Refunded
+Created → Cancelled → Refunded
 ```
 
-### Method Reference
+## Method reference
 
-| Method | Description | Auth Required |
-| :--- | :--- | :--- |
-| `init(admin)` | Initializes the contract and sets the admin. | None |
-| `fund(token, from, amount)` | Deposits funds into the contract pool. | `from` |
-| `create_package(operator, id, recipient, amount, token, expires_at)` | Creates a package with a manual ID. | `admin` or `distributor` |
-| `batch_create_packages(operator, recipients, amounts, token, expires_in)` | Creates multiple packages with auto-incremented IDs. | `admin` or `distributor` |
-| `claim(id)` | Recipient claims their allocated funds. | `recipient` |
-| `disburse(id)` | Admin manually sends package funds to recipient. | `admin` |
-| `revoke(id)` / `cancel_package(id)` | Cancels an active package and unlocks funds. | `admin` |
-| `refund(id)` | Returns funds from an expired/cancelled package to admin. | `admin` |
-| `extend_expiration(id, additional_time)` | Extends the expiration of a package. | `admin` |
-| `withdraw_surplus(to, amount, token)` | Withdraws unallocated (non-locked) funds. | `admin` |
-| `add_distributor(addr)` | Grants distributor rights to an address. | `admin` |
-| `remove_distributor(addr)` | Revokes distributor rights. | `admin` |
-| `pause()` / `unpause()` | Pauses/Unpauses contract operations. | `admin` |
-| `set_config(config)` | Updates global limits (min amount, max expiry). | `admin` |
-| `get_package(id)` | Returns full package details. | None |
-| `view_package_status(id)` | Returns only the status of a package. | None |
-| `get_aggregates(token)` | Returns total committed/claimed/expired stats. | None |
+| Method | Description | Who can call |
+|---|---|---|
+| `init(admin)` | Initialise contract and set admin | Anyone (once) |
+| `fund(token, from, amount)` | Deposit tokens into the pool | `from` |
+| `create_package(...)` | Lock funds for a recipient | Admin / distributor |
+| `batch_create_packages(...)` | Create multiple packages at once | Admin / distributor |
+| `claim(id)` | Recipient claims their package | Recipient |
+| `disburse(id)` | Admin manually sends funds to recipient | Admin |
+| `revoke(id)` | Cancel an active package | Admin |
+| `refund(id)` | Return funds from expired/cancelled package | Admin |
+| `extend_expiration(id, time)` | Extend a package's expiry | Admin |
+| `withdraw_surplus(to, amount, token)` | Withdraw unallocated funds | Admin |
+| `add_distributor(addr)` | Grant distributor rights | Admin |
+| `remove_distributor(addr)` | Revoke distributor rights | Admin |
+| `pause()` / `unpause()` | Pause or resume contract operations | Admin |
+| `get_package(id)` | Read full package details | Anyone |
+| `get_aggregates(token)` | Read total committed/claimed/expired stats | Anyone |
 
-## 🚀 Quick Start
+## Events
 
-### Prerequisites
+| Event | When emitted |
+|---|---|
+| `escrow_funded` | Pool is funded |
+| `package_created` | Package created for a recipient |
+| `package_claimed` | Recipient claims their package |
+| `package_disbursed` | Admin manually disburses |
+| `package_revoked` | Package cancelled |
+| `package_refunded` | Funds returned to pool |
+| `batch_created_event` | Batch of packages created |
+| `extended_event` | Package expiry extended |
+
+## Setup
+
 ```bash
 # Install Rust
-curl --proto '=https' --tlsv1.2 -sSf [https://sh.rustup.rs](https://sh.rustup.rs) | sh
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 
 # Add WebAssembly target
 rustup target add wasm32-unknown-unknown
 
-# Install Soroban CLI
-cargo install --locked soroban-cli
+# Install Stellar CLI
+cargo install --locked stellar-cli
+```
+
+## Build
+
+```bash
+cd app/onchain
+cargo build --target wasm32-unknown-unknown --release
+```
+
+Or using the Makefile:
+
+```bash
+make build
+```
+
+## Test
+
+```bash
+cargo test
+```
+
+## Deploy
+
+```bash
+stellar contract deploy \
+  --wasm target/wasm32-unknown-unknown/release/aid_escrow.wasm \
+  --source YOUR_SECRET_KEY \
+  --network testnet
+```
+
+Copy the contract ID into `app/backend/.env` as `AID_ESCROW_CONTRACT_ID`.
+
+## Initialise
+
+```bash
+stellar contract invoke \
+  --id YOUR_CONTRACT_ID \
+  --source YOUR_SECRET_KEY \
+  --network testnet \
+  -- init \
+  --admin YOUR_ADMIN_ADDRESS
+```
+
+## Structure
+
+```
+contracts/
+└── aid_escrow/
+    ├── src/
+    │   ├── lib.rs          # Contract entry points
+    │   └── delegate.rs     # Auth delegation logic
+    └── tests/              # Integration and unit tests
+scripts/
+├── deploy.sh
+└── invoke.sh
+```
